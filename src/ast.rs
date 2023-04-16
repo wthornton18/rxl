@@ -1,4 +1,4 @@
-use bigdecimal::BigDecimal;
+use bigdecimal::{BigDecimal, FromPrimitive};
 
 use crate::{
     error::{TableError, TableResult},
@@ -19,10 +19,14 @@ pub enum Expr {
         operator: Token,
         right: Box<Expr>,
     },
+    Call {
+        calle: Box<Expr>,
+        arguments: Vec<Box<Expr>>,
+    },
 }
 
 impl Expr {
-    fn binary(left: Expr, operator: Token, right: Expr) -> Self {
+    pub fn binary(left: Expr, operator: Token, right: Expr) -> Self {
         Self::Binary {
             left: Box::new(left),
             operator,
@@ -30,260 +34,139 @@ impl Expr {
         }
     }
 
-    fn grouping(expr: Expr) -> Self {
+    pub fn grouping(expr: Expr) -> Self {
         Self::Grouping(Box::new(expr))
     }
 
-    fn literal(token: Token) -> Self {
+    pub fn literal(token: Token) -> Self {
         Self::Literal(token)
     }
 
-    fn unary(operator: Token, right: Expr) -> Self {
+    pub fn unary(operator: Token, right: Expr) -> Self {
         Self::Unary {
             operator,
             right: Box::new(right),
         }
     }
 
-    fn eval<P>(&self, ast: &Expr, eval_other: &mut P) -> TableResult<BigDecimal>
-    where
-        P: FnMut(usize, usize) -> TableResult<BigDecimal>,
-    {
-        use Expr::*;
-        use Token::*;
-        match ast {
-            Binary {
-                left,
-                operator,
-                right,
-            } => {
-                let left = self.eval(left, eval_other)?;
-                let right = self.eval(right, eval_other)?;
-                Ok(match operator {
-                    Plus => left + right,
-                    Slash => left / right,
-                    Minus => left - right,
-                    Star => left * right,
-                    _ => Err(TableError::RuntimeError(format!(
-                        "invalid token in binary expression: {operator:?}"
-                    )))?,
-                })
-            }
-            Grouping(expr) => expr.eval(expr, eval_other),
-            Literal(token) => match token {
-                Number(d) => Ok(d.clone()),
-                CellRef((col, row)) => eval_other(*col, *row),
-                _ => Err(TableError::RuntimeError(format!(
-                    "invalid token literal {token:?}"
-                ))),
-            },
-            Unary { operator, right } => {
-                let right = self.eval(right, eval_other)?;
-
-                match operator {
-                    Minus => Ok(-right),
-                    _ => Err(TableError::RuntimeError(format!(
-                        "invalid token for unary expression {operator:?}"
-                    ))),
-                }
-            }
+    pub fn call(calle: Expr, arguments: Vec<Expr>) -> Self {
+        Self::Call {
+            calle: Box::new(calle),
+            arguments: arguments
+                .into_iter()
+                .map(|e| Box::new(e))
+                .collect::<Vec<_>>(),
         }
     }
 }
 
 impl Evaluate for Expr {
-    fn evaluate<P>(&self, mut evaluate_other: P) -> TableResult<BigDecimal>
+    fn evaluate<P>(&self, get_cell_value: &mut P) -> Vec<TableResult<BigDecimal>>
     where
         P: FnMut(usize, usize) -> TableResult<BigDecimal>,
     {
-        self.eval(self, &mut evaluate_other)
-    }
-}
-
-pub struct Parser<'source, I: Iterator<Item = TableResult<Token>>> {
-    iterator: &'source mut I,
-    current_token: Option<Token>,
-    previous_token: Option<Token>,
-}
-
-impl<'source, I: Iterator<Item = TableResult<Token>>> Parser<'source, I> {
-    pub fn new(iterator: &'source mut I) -> Self {
-        Self {
-            iterator,
-            current_token: None,
-            previous_token: None,
-        }
-    }
-
-    fn get_previous_token(&mut self) -> TableResult<Token> {
-        self.previous_token
-            .clone()
-            .ok_or(TableError::ErrorConstructingAst(format!(
-                "Error returning previous token"
-            )))
-    }
-
-    pub fn ast(&mut self) -> TableResult<Expr> {
-        self.advance()?;
-        self.expression()
-    }
-
-    fn expression(&mut self) -> TableResult<Expr> {
-        self.term()
-    }
-
-    fn term(&mut self) -> TableResult<Expr> {
-        use Token::{Minus, Plus};
-        let mut expr = self.factor()?;
-        loop {
-            if !self.advance_match(|t| t == Minus || t == Plus)? {
-                return Ok(expr);
-            }
-
-            let operator = self.get_previous_token()?;
-
-            let right = self.factor()?;
-            expr = Expr::binary(expr, operator, right);
-        }
-    }
-
-    fn factor(&mut self) -> TableResult<Expr> {
-        use Token::{Slash, Star};
-        let mut expr = self.unary()?;
-
-        loop {
-            if !self.advance_match(|t| t == Slash || t == Star)? {
-                return Ok(expr);
-            }
-            let operator = self.get_previous_token()?;
-            let right = self.unary()?;
-            expr = Expr::binary(expr, operator, right);
-        }
-    }
-
-    fn unary(&mut self) -> TableResult<Expr> {
-        use Token::Minus;
-        if self.advance_match(|t| t == Minus)? {
-            let operator = self.get_previous_token()?;
-            let right = self.unary()?;
-            Ok(Expr::unary(operator, right))
-        } else {
-            self.primary()
-        }
-    }
-
-    fn primary(&mut self) -> TableResult<Expr> {
-        use Token::{LeftParen, RightParen};
-        if self.advance_match(|t| t.is_number() || t.is_cell_ref())? {
-            let token = self.get_previous_token()?;
-
-            Ok(Expr::literal(token))
-        } else if self.advance_match(|t| t == LeftParen)? {
-            let expr = self.expression()?;
-            self.consume_or(
-                |t| t == RightParen,
-                TableError::ErrorConstructingAst(format!("Expected ')' after expression")),
-            )?;
-
-            Ok(Expr::grouping(expr))
-        } else {
-            Err(TableError::ErrorConstructingAst(format!(
-                "Invalid primary expression token: {:?}",
-                self.current_token.clone()
-            )))
-        }
-    }
-
-    fn advance_match<P>(&mut self, predicate: P) -> TableResult<bool>
-    where
-        P: FnOnce(Token) -> bool,
-    {
-        match self.current_token.clone() {
-            Some(t) if predicate(t.clone()) => {
-                self.advance()?;
-                Ok(true)
-            }
-            _ => Ok(false),
-        }
-    }
-
-    fn consume_or<P>(&mut self, predicate: P, err: TableError) -> TableResult<()>
-    where
-        P: FnOnce(Token) -> bool,
-    {
-        match self.current_token.clone() {
-            Some(t) if predicate(t.clone()) => {
-                self.advance()?;
-                Ok(())
-            }
-            _ => Err(err),
-        }
-    }
-
-    fn advance(&mut self) -> TableResult<()> {
-        self.previous_token = self.current_token.clone();
-        self.current_token = match self.iterator.next() {
-            None => None,
-            Some(t) => Some(t?),
-        };
-
-        Ok(())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    use bigdecimal::{BigDecimal, FromPrimitive};
-
-    struct DummyTokenizer {
-        tokens: Vec<Token>,
-        pointer: usize,
-    }
-
-    impl DummyTokenizer {
-        fn new(tokens: Vec<Token>) -> Self {
-            Self { tokens, pointer: 0 }
-        }
-    }
-
-    impl Iterator for DummyTokenizer {
-        type Item = TableResult<Token>;
-        fn next(&mut self) -> Option<Self::Item> {
-            if self.pointer < self.tokens.len() {
-                let token = self.tokens[self.pointer].clone();
-                self.pointer += 1;
-                Some(Ok(token))
-            } else {
-                None
-            }
-        }
-    }
-
-    #[test]
-    fn test_simple_op() {
-        use Token::{CellRef, Minus, Number, Plus, Slash, Star};
-
-        for op in [Minus, Plus, Slash, Star] {
-            for left_token in [CellRef((0, 0)), Number(BigDecimal::from_f64(1.2).unwrap())] {
-                for right_token in [CellRef((1, 1)), Number(BigDecimal::from_f64(1.4).unwrap())] {
-                    let tokens = vec![left_token.clone(), op.clone(), right_token.clone()];
-                    let mut tokenizer = DummyTokenizer::new(tokens);
-                    let mut parser = Parser::new(&mut tokenizer);
-                    let ast = parser.ast();
-                    assert!(ast.is_ok());
-                    let expectec_ast = Expr::binary(
-                        Expr::literal(left_token.clone()),
-                        op.clone(),
-                        Expr::literal(right_token),
-                    );
-
-                    let ast = ast.unwrap();
-
-                    assert_eq!(ast, expectec_ast);
+        use Expr::*;
+        use Token::*;
+        match self {
+            Binary {
+                left,
+                operator,
+                right,
+            } => {
+                let left = left.evaluate(get_cell_value);
+                let right = right.evaluate(get_cell_value);
+                if left.len() != 1 || right.len() != 1 {
+                    return vec![Err(TableError::runtime_error(
+                        "Cannot add cell ranges together",
+                    ))];
+                }
+                let left = left[0].clone();
+                let right = right[0].clone();
+                if let (Ok(left), Ok(right)) = (left, right) {
+                    let res = match operator {
+                        Plus => Ok(left + right),
+                        Slash => Ok(left / right),
+                        Minus => Ok(left - right),
+                        Star => Ok(left * right),
+                        _ => Err(TableError::RuntimeError(format!(
+                            "invalid token in binary expression: {operator:?}"
+                        ))),
+                    };
+                    vec![res]
+                } else {
+                    vec![Err(TableError::runtime_error(
+                        "Error performing binary operation on two cells",
+                    ))]
                 }
             }
+            Grouping(expr) => expr.evaluate(get_cell_value),
+            Literal(token) => match token {
+                Number(d) => vec![Ok(d.clone())],
+                CellRef((col, row)) => vec![get_cell_value(*col, *row)],
+                CellRange((col_range, row_range)) => {
+                    let mut cells = Vec::new();
+                    for col in col_range.clone().into_iter() {
+                        for row in row_range.clone().into_iter() {
+                            cells.push(get_cell_value(col, row))
+                        }
+                    }
+                    cells
+                }
+                _ => vec![Err(TableError::RuntimeError(format!(
+                    "invalid token literal {token:?}"
+                )))],
+            },
+            Unary { operator, right } => {
+                let right = right.evaluate(get_cell_value);
+                if right.len() != 1 {
+                    return vec![Err(TableError::runtime_error(
+                        "Error in unary expression - expected single cell value",
+                    ))];
+                }
+
+                let right = right[0].clone();
+
+                match (operator, right) {
+                    (Minus, Ok(r)) => vec![Ok(-r)],
+                    (_, Err(r)) => vec![Err(r)],
+                    _ => vec![Err(TableError::RuntimeError(format!(
+                        "invalid token for unary expression {operator:?}"
+                    )))],
+                }
+            }
+            Call { calle, arguments } => match *calle.clone() {
+                Expr::Literal(t) => match t {
+                    Sum => {
+                        let counter = BigDecimal::from_i128(0).ok_or(TableError::RuntimeError(
+                            format!("Error performing summation"),
+                        ));
+                        if let Err(c) = counter {
+                            return vec![Err(c)];
+                        }
+                        let mut counter = counter.unwrap();
+                        for arg in arguments {
+                            let res = arg.evaluate(get_cell_value);
+                            for r in res {
+                                if let Ok(res) = r.clone() {
+                                    counter += res;
+                                } else {
+                                    return vec![Err(TableError::runtime_error(
+                                        "Error performing summation",
+                                    ))];
+                                }
+                            }
+                        }
+
+                        vec![Ok(counter)]
+                    }
+                    _ => vec![Err(TableError::RuntimeError(format!(
+                        "Invalid token encountered type for calle {t:?}"
+                    )))],
+                },
+                _ => vec![Err(TableError::RuntimeError(format!(
+                    "Invalid expr type for calle {calle:?}"
+                )))],
+            },
         }
     }
 }

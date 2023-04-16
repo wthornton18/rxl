@@ -1,4 +1,4 @@
-use std::{cell::RefCell, collections::HashSet};
+use std::collections::HashSet;
 
 use bigdecimal::BigDecimal;
 
@@ -8,6 +8,7 @@ use crate::{
     error::{TableError, TableResult},
     eval::Evaluate,
 };
+
 #[derive(Debug, Clone)]
 pub struct Table<'source, T>
 where
@@ -19,14 +20,14 @@ where
 }
 
 impl<'source> Table<'source, Expr> {
-    fn new_interpet(source: &'source str) -> TableResult<Self> {
+    pub fn new_interpet(source: &'source str) -> TableResult<Self> {
         let mut cells = Vec::new();
         let mut rows = 0;
 
         let mut previous_cols = None;
         for row in source.lines() {
             let mut current_cols = 0;
-            for col in row.split(',') {
+            for col in row.split('|') {
                 let cell = Cell::new_expr(col);
                 cells.push(cell);
                 current_cols += 1;
@@ -51,11 +52,11 @@ impl<'source, T: Evaluate> Table<'source, T> {
         &mut self,
         col: usize,
         row: usize,
-        call_chain: HashSet<(usize, usize)>,
+        mut call_chain: HashSet<(usize, usize)>,
     ) -> TableResult<BigDecimal> {
-        if call_chain.contains(&(col, row)) {
+        if !call_chain.insert((col, row)) {
             return Err(TableError::RecursiveCellExpr((col, row)));
-        };
+        }
 
         let cell = self.cells[(col * self.rows + row)].clone()?;
         match cell.kind.clone() {
@@ -63,9 +64,13 @@ impl<'source, T: Evaluate> Table<'source, T> {
             CellKind::Number(d) => Ok(d),
             CellKind::Expr { result, expr } => {
                 if let None = result {
-                    let res = expr.evaluate(|new_col, new_row| {
+                    let res = expr.evaluate(&mut |new_col, new_row| {
                         Table::evaluate_cell(self, new_col, new_row, call_chain.clone())
                     });
+                    let res = match res.len() {
+                        1 => res[0].clone(),
+                        _ => Err(TableError::MultipleCellReturn),
+                    };
                     self.cells[(col * self.rows + row)] = Ok(Cell {
                         kind: CellKind::Expr {
                             expr,
@@ -80,25 +85,47 @@ impl<'source, T: Evaluate> Table<'source, T> {
         }
     }
 
-    fn run(&mut self) {
+    pub fn run(&mut self) {
         for col in 0..self.cols {
             for row in 0..self.rows {
-                let mut call_chain = HashSet::new();
-                self.evaluate_cell(col, row, call_chain);
+                if let Ok(c) = self.cells[(col * self.rows + row)].clone() {
+                    match c.kind {
+                        CellKind::Expr { expr, result } if result.is_none() => {
+                            let res = expr.evaluate(&mut |new_col, new_row| {
+                                Table::evaluate_cell(self, new_col, new_row, HashSet::new())
+                            });
+                            let res = match res.len() {
+                                1 => res[0].clone(),
+                                _ => Err(TableError::MultipleCellReturn),
+                            };
+                            self.cells[(col * self.rows + row)] = Ok(Cell {
+                                kind: CellKind::Expr {
+                                    expr,
+                                    result: Some(res.clone()),
+                                },
+                                source: c.source,
+                            });
+                        }
+                        _ => {}
+                    }
+                }
             }
         }
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_table() {
-        let mut table = Table::new_interpet("1,2\n=a1+a2,=b1+3").unwrap();
-        table.run();
-        println!("{:?}", table);
-        assert_eq!(1, 2)
+impl<'source, T: Evaluate> std::fmt::Display for Table<'source, T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for col in 0..self.cols {
+            for row in 0..self.rows {
+                match self.cells[col * self.rows + row].clone() {
+                    Ok(c) => write!(f, "{c}")?,
+                    Err(e) => write!(f, "{e}")?,
+                };
+                write!(f, "|")?;
+            }
+            write!(f, "\n")?;
+        }
+        Ok(())
     }
 }

@@ -1,12 +1,9 @@
 use super::ast::Expr;
-use super::ast::Parser;
 use super::error::*;
 use super::eval::Evaluate;
-use super::table::Table;
+use super::parser::Parser;
 use super::tokenizer::Tokenizer;
 use bigdecimal::BigDecimal;
-use std::cell::RefCell;
-use std::cell::RefMut;
 use std::str::FromStr;
 
 #[derive(Debug, Clone, Default)]
@@ -56,20 +53,18 @@ impl<'a> Cell<'a, Expr> {
     }
 }
 
-impl<'a, T: Evaluate> Cell<'a, T> {
-    pub fn evaluate<P>(self, evaluate_other: P)
-    where
-        P: FnMut(usize, usize) -> TableResult<BigDecimal>,
-    {
+impl<'a, T: Evaluate> std::fmt::Display for Cell<'a, T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self.kind.clone() {
-            CellKind::Expr {
-                mut expr,
-                mut result,
-            } if result.is_none() => {
-                result = Some(expr.evaluate(evaluate_other));
-            }
-
-            _ => {}
+            CellKind::Empty => write!(f, " "),
+            CellKind::Number(d) => write!(f, "{d}"),
+            CellKind::Expr { result, .. } => match result {
+                None => write!(f, "{}", self.source),
+                Some(r) => match r {
+                    Err(e) => write!(f, "{e}"),
+                    Ok(c) => write!(f, "{c}"),
+                },
+            },
         }
     }
 }
@@ -81,12 +76,6 @@ impl<'a, T: Evaluate> Cell<'a, T> {
 //     {
 //     }
 // }
-
-impl<'a, T: Evaluate + Clone> std::fmt::Display for Cell<'a, T> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.source)
-    }
-}
 
 fn parse_expr<'a>(token_stream: &'a [char]) -> TableResult<CellKind<Expr>> {
     let mut tokenizer = Tokenizer::new(&token_stream);

@@ -6,6 +6,9 @@ use std::str::FromStr;
 pub enum Token {
     Number(BigDecimal),
     CellRef((usize, usize)),
+    CellRange((std::ops::Range<usize>, std::ops::Range<usize>)),
+    Comma,
+    Sum,
     Plus,
     Slash,
     Minus,
@@ -19,20 +22,17 @@ impl Token {
         matches!(self, Self::Number(..))
     }
 
-    pub fn get_number(&self) -> Option<BigDecimal> {
-        match self {
-            Self::Number(d) => Some(d.clone()),
-            _ => None,
-        }
-    }
-
     pub fn is_cell_ref(&self) -> bool {
         matches!(self, Self::CellRef(..))
     }
 
-    pub fn is_binary(&self) -> bool {
+    pub fn is_cell_range(&self) -> bool {
+        matches!(self, Self::CellRange(..))
+    }
+
+    pub fn is_builtin_fn(&self) -> bool {
         use Token::*;
-        matches!(self, Plus | Slash | Star | Minus)
+        matches!(self, Sum)
     }
 }
 
@@ -47,6 +47,7 @@ impl TryFrom<char> for Token {
             '*' => Ok(Star),
             '(' => Ok(LeftParen),
             ')' => Ok(RightParen),
+            ',' => Ok(Comma),
             _ => Err(TableError::InvalidCell(format!(
                 "Unknown character encountered: {value}"
             ))),
@@ -67,7 +68,7 @@ impl<'a> Tokenizer<'a> {
         self.source.is_empty()
     }
 
-    fn chop_while_idx<P>(&mut self, mut predicate: P) -> usize
+    fn peek_while<P>(&mut self, mut predicate: P) -> usize
     where
         P: FnMut(char) -> bool,
     {
@@ -82,7 +83,7 @@ impl<'a> Tokenizer<'a> {
     where
         P: FnMut(char) -> bool,
     {
-        let n = self.chop_while_idx(predicate);
+        let n = self.peek_while(predicate);
         self.chop(n)
     }
 
@@ -90,7 +91,7 @@ impl<'a> Tokenizer<'a> {
     where
         P: FnMut(char) -> bool,
     {
-        let n = self.chop_while_idx(predicate);
+        let n = self.peek_while(predicate);
         if n == 0 {
             return Err(err);
         };
@@ -105,6 +106,17 @@ impl<'a> Tokenizer<'a> {
 
     fn strip_left(&mut self) {
         self.chop_while(|c| c.is_whitespace());
+    }
+
+    fn peek_match<P>(&mut self, mut predicate: P) -> bool
+    where
+        P: FnMut(char) -> bool,
+    {
+        if self.at_end() {
+            false
+        } else {
+            predicate(self.source[0])
+        }
     }
 
     fn number(&mut self) -> TableResult<Token> {
@@ -124,7 +136,7 @@ impl<'a> Tokenizer<'a> {
         Ok(Token::Number(decimal))
     }
 
-    fn cell_reference(&mut self) -> TableResult<Token> {
+    fn parse_cell_reference(&mut self) -> TableResult<(usize, usize)> {
         let column_slice = self.chop_while_or_else(
             |c| c.is_ascii_alphabetic(),
             TableError::InvalidCell(format!("Could not parse cell reference")),
@@ -155,8 +167,47 @@ impl<'a> Tokenizer<'a> {
                 "Could not parse cell reference"
             )));
         }
+        Ok((col - 1, row - 1))
+    }
 
-        Ok(Token::CellRef((col - 1, row - 1)))
+    fn cell_reference(&mut self) -> TableResult<Token> {
+        let (col, row) = self.parse_cell_reference()?;
+
+        if !self.peek_match(|c| c == ':') {
+            return Ok(Token::CellRef((col, row)));
+        }
+
+        self.chop(1);
+
+        let (next_col, next_row) = self
+            .parse_cell_reference()
+            .map_err(|_| TableError::InvalidCell(format!("Invalid cell range")))?;
+
+        Ok(Token::CellRange((
+            std::ops::Range {
+                start: col,
+                end: next_col + 1,
+            },
+            std::ops::Range {
+                start: row,
+                end: next_row + 1,
+            },
+        )))
+    }
+
+    pub fn literal(&mut self) -> TableResult<Token> {
+        let n = self.peek_while(|c| c.is_alphabetic());
+        let res = match self.source[0..n]
+            .iter()
+            .map(|c| c.to_ascii_lowercase())
+            .collect::<String>()
+            .as_ref()
+        {
+            "sum" => Ok(Token::Sum),
+            _ => return self.cell_reference(),
+        };
+        self.chop(n);
+        res
     }
 
     fn next_token(&mut self) -> Option<TableResult<Token>> {
@@ -166,7 +217,7 @@ impl<'a> Tokenizer<'a> {
         }
 
         let token = match self.source[0] {
-            c if c.is_ascii_alphabetic() => self.cell_reference(),
+            c if c.is_ascii_alphabetic() => self.literal(),
             c if c.is_numeric() => self.number(),
             _ => {
                 let token = Token::try_from(self.source[0]);
@@ -189,6 +240,7 @@ impl<'a> Iterator for Tokenizer<'a> {
 #[cfg(test)]
 mod tests {
     use bigdecimal::FromPrimitive;
+    use std::ops::Range;
 
     use super::*;
 
@@ -223,6 +275,67 @@ mod tests {
                 assert!(token.is_ok());
                 assert_eq!(token.clone().unwrap(), expected_token);
             }
+        }
+    }
+
+    #[test]
+    fn test_parse_cell_range() {
+        use Token::*;
+        let input = &[' ', ' ', 'a', '1', ':', 'a', '5'];
+        let tokenizer = Tokenizer::new(input);
+        let tokens = tokenizer.collect::<Vec<TableResult<Token>>>();
+        assert_eq!(tokens.len(), 1);
+        assert_eq!(
+            tokens[0].clone().unwrap(),
+            CellRange((Range { start: 0, end: 1 }, Range { start: 0, end: 5 }))
+        )
+    }
+
+    #[test]
+    fn test_sum_cell_range() {
+        use Token::*;
+        let input = &[
+            ' ', ' ', 's', 'u', 'm', '(', 'a', '1', ':', 'b', '2', '2', ')', '+', 'c', '3',
+        ];
+        let tokenizer = Tokenizer::new(input);
+        let tokens = tokenizer.collect::<Vec<TableResult<Token>>>();
+        assert_eq!(tokens.len(), 6);
+        let expected_tokens = vec![
+            Sum,
+            LeftParen,
+            CellRange((Range { start: 0, end: 2 }, Range { start: 0, end: 22 })),
+            RightParen,
+            Plus,
+            CellRef((2, 2)),
+        ];
+        for (token, expected_token) in tokens.iter().zip(expected_tokens) {
+            assert!(token.is_ok());
+            assert_eq!(token.clone().unwrap(), expected_token)
+        }
+    }
+
+    #[test]
+    fn test_sum_cell_values() {
+        use Token::*;
+        let input = &[
+            ' ', ' ', 's', 'u', 'm', '(', 'a', '1', ',', ' ', 'b', '2', '2', ')', '+', 'c', '3',
+        ];
+        let tokenizer = Tokenizer::new(input);
+        let tokens = tokenizer.collect::<Vec<TableResult<Token>>>();
+        assert_eq!(tokens.len(), 8);
+        let expected_tokens = vec![
+            Sum,
+            LeftParen,
+            CellRef((0, 0)),
+            Comma,
+            CellRef((1, 21)),
+            RightParen,
+            Plus,
+            CellRef((2, 2)),
+        ];
+        for (token, expected_token) in tokens.iter().zip(expected_tokens) {
+            assert!(token.is_ok());
+            assert_eq!(token.clone().unwrap(), expected_token)
         }
     }
 }

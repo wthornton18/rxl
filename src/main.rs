@@ -6,14 +6,13 @@ use std::io::{BufReader, Read};
 
 mod cell;
 mod error;
-mod precedence;
 use error::{TableError, TableResult};
 mod ast;
 mod eval;
+mod parser;
 mod table;
 mod tokenizer;
-use ast::Parser;
-use tokenizer::Tokenizer;
+use table::Table;
 
 fn main() -> TableResult<()> {
     let f = File::open("./input.rxl").map_err(|_| TableError::ErrorReadingFile)?;
@@ -23,8 +22,11 @@ fn main() -> TableResult<()> {
         .read_to_string(&mut buf)
         .map_err(|_| TableError::ErrorReadingFile)?;
 
-    let chars = buf.chars().collect::<Vec<_>>();
+    let chars = buf.chars().collect::<String>();
 
-    //println!("{:?}", table);
+    let mut table = Table::new_interpet(&chars)?;
+    println!("{}", table);
+    table.run();
+    println!("{}", table);
     Ok(())
 }
