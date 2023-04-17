@@ -13,6 +13,7 @@ mod parser;
 mod table;
 mod tokenizer;
 use table::Table;
+mod grid;
 
 fn main() -> TableResult<()> {
     let f = File::open("./input.rxl").map_err(|_| TableError::ErrorReadingFile)?;

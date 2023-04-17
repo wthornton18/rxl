@@ -76,12 +76,15 @@ impl Evaluate for Expr {
                 let left = left.evaluate(get_cell_value);
                 let right = right.evaluate(get_cell_value);
                 if left.len() != 1 || right.len() != 1 {
-                    return vec![Err(TableError::runtime_error(
-                        "Cannot add cell ranges together",
-                    ))];
+                    return vec![Err(TableError::runtime_error(format!(
+                        "Cannot {operator:?} cell ranges together"
+                    )))];
                 }
+
                 let left = left[0].clone();
+
                 let right = right[0].clone();
+
                 if let (Ok(left), Ok(right)) = (left, right) {
                     let res = match operator {
                         Plus => Ok(left + right),
@@ -102,12 +105,12 @@ impl Evaluate for Expr {
             Grouping(expr) => expr.evaluate(get_cell_value),
             Literal(token) => match token {
                 Number(d) => vec![Ok(d.clone())],
-                CellRef((col, row)) => vec![get_cell_value(*col, *row)],
-                CellRange((col_range, row_range)) => {
+                CellRef((row, col)) => vec![get_cell_value(*row, *col)],
+                CellRange((row_range, col_range)) => {
                     let mut cells = Vec::new();
                     for col in col_range.clone().into_iter() {
                         for row in row_range.clone().into_iter() {
-                            cells.push(get_cell_value(col, row))
+                            cells.push(get_cell_value(row, col))
                         }
                     }
                     cells

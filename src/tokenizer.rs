@@ -167,30 +167,30 @@ impl<'a> Tokenizer<'a> {
                 "Could not parse cell reference"
             )));
         }
-        Ok((col - 1, row - 1))
+        Ok((row - 1, col - 1))
     }
 
     fn cell_reference(&mut self) -> TableResult<Token> {
-        let (col, row) = self.parse_cell_reference()?;
+        let (row, col) = self.parse_cell_reference()?;
 
         if !self.peek_match(|c| c == ':') {
-            return Ok(Token::CellRef((col, row)));
+            return Ok(Token::CellRef((row, col)));
         }
 
         self.chop(1);
 
-        let (next_col, next_row) = self
+        let (next_row, next_col) = self
             .parse_cell_reference()
             .map_err(|_| TableError::InvalidCell(format!("Invalid cell range")))?;
 
         Ok(Token::CellRange((
             std::ops::Range {
-                start: col,
-                end: next_col + 1,
-            },
-            std::ops::Range {
                 start: row,
                 end: next_row + 1,
+            },
+            std::ops::Range {
+                start: col,
+                end: next_col + 1,
             },
         )))
     }

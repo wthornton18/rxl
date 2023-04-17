@@ -7,6 +7,7 @@ use crate::{
     cell::{Cell, CellKind},
     error::{TableError, TableResult},
     eval::Evaluate,
+    grid::Grid,
 };
 
 #[derive(Debug, Clone)]
@@ -14,9 +15,7 @@ pub struct Table<'source, T>
 where
     T: Evaluate,
 {
-    rows: usize,
-    cols: usize,
-    cells: Vec<TableResult<Cell<'source, T>>>,
+    grid: Grid<TableResult<Cell<'source, T>>>,
 }
 
 impl<'source> Table<'source, Expr> {
@@ -42,7 +41,9 @@ impl<'source> Table<'source, Expr> {
         }
         match previous_cols {
             None => Err(TableError::EmptyTable),
-            Some(cols) => Ok(Self { rows, cols, cells }),
+            Some(cols) => Ok(Self {
+                grid: Grid::new(rows, cols, cells),
+            }),
         }
     }
 }
@@ -50,28 +51,28 @@ impl<'source> Table<'source, Expr> {
 impl<'source, T: Evaluate> Table<'source, T> {
     pub fn evaluate_cell(
         &mut self,
-        col: usize,
         row: usize,
+        col: usize,
         mut call_chain: HashSet<(usize, usize)>,
     ) -> TableResult<BigDecimal> {
-        if !call_chain.insert((col, row)) {
-            return Err(TableError::RecursiveCellExpr((col, row)));
+        if !call_chain.insert((row, col)) {
+            return Err(TableError::RecursiveCellExpr((row, col)));
         }
 
-        let cell = self.cells[(col * self.rows + row)].clone()?;
+        let cell = self.grid[(row, col)].clone()?;
         match cell.kind.clone() {
             CellKind::Empty => Err(TableError::EmptyCellEvaluation),
             CellKind::Number(d) => Ok(d),
             CellKind::Expr { result, expr } => {
                 if let None = result {
-                    let res = expr.evaluate(&mut |new_col, new_row| {
-                        Table::evaluate_cell(self, new_col, new_row, call_chain.clone())
+                    let res = expr.evaluate(&mut |other_row, other_col| {
+                        Table::evaluate_cell(self, other_row, other_col, call_chain.clone())
                     });
                     let res = match res.len() {
                         1 => res[0].clone(),
                         _ => Err(TableError::MultipleCellReturn),
                     };
-                    self.cells[(col * self.rows + row)] = Ok(Cell {
+                    self.grid[(row, col)] = Ok(Cell {
                         kind: CellKind::Expr {
                             expr,
                             result: Some(res.clone()),
@@ -86,9 +87,9 @@ impl<'source, T: Evaluate> Table<'source, T> {
     }
 
     pub fn run(&mut self) {
-        for col in 0..self.cols {
-            for row in 0..self.rows {
-                if let Ok(c) = self.cells[(col * self.rows + row)].clone() {
+        for col in 0..self.grid.cols {
+            for row in 0..self.grid.rows {
+                if let Ok(c) = self.grid[(row, col)].clone() {
                     match c.kind {
                         CellKind::Expr { expr, result } if result.is_none() => {
                             let res = expr.evaluate(&mut |new_col, new_row| {
@@ -98,13 +99,13 @@ impl<'source, T: Evaluate> Table<'source, T> {
                                 1 => res[0].clone(),
                                 _ => Err(TableError::MultipleCellReturn),
                             };
-                            self.cells[(col * self.rows + row)] = Ok(Cell {
+                            self.grid[(row, col)] = Ok(Cell {
                                 kind: CellKind::Expr {
                                     expr,
                                     result: Some(res.clone()),
                                 },
                                 source: c.source,
-                            });
+                            })
                         }
                         _ => {}
                     }
@@ -116,9 +117,9 @@ impl<'source, T: Evaluate> Table<'source, T> {
 
 impl<'source, T: Evaluate> std::fmt::Display for Table<'source, T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        for col in 0..self.cols {
-            for row in 0..self.rows {
-                match self.cells[col * self.rows + row].clone() {
+        for row in 0..self.grid.rows {
+            for col in 0..self.grid.cols {
+                match self.grid[(row, col)].clone() {
                     Ok(c) => write!(f, "{c}")?,
                     Err(e) => write!(f, "{e}")?,
                 };
