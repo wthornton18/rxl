@@ -1,4 +1,4 @@
-use bigdecimal::{BigDecimal, FromPrimitive};
+use bigdecimal::BigDecimal;
 
 use crate::{
     error::{TableError, TableResult},
