@@ -140,13 +140,7 @@ impl Evaluate for Expr {
             Call { calle, arguments } => match *calle.clone() {
                 Expr::Literal(t) => match t {
                     Sum => {
-                        let counter = BigDecimal::from_i128(0).ok_or(TableError::RuntimeError(
-                            format!("Error performing summation"),
-                        ));
-                        if let Err(c) = counter {
-                            return vec![Err(c)];
-                        }
-                        let mut counter = counter.unwrap();
+                        let mut counter = BigDecimal::from(0);
                         for arg in arguments {
                             let res = arg.evaluate(get_cell_value);
                             for r in res {
@@ -161,6 +155,24 @@ impl Evaluate for Expr {
                         }
 
                         vec![Ok(counter)]
+                    }
+                    Mean => {
+                        let mut counter = BigDecimal::from(0);
+                        let mut n = 0;
+                        for arg in arguments {
+                            let res = arg.evaluate(get_cell_value);
+                            for r in res {
+                                if let Ok(res) = r.clone() {
+                                    counter += res;
+                                } else {
+                                    return vec![Err(TableError::runtime_error(
+                                        "Error performing summation",
+                                    ))];
+                                }
+                            }
+                            n += 1;
+                        }
+                        return vec![Ok(counter / n)];
                     }
                     _ => vec![Err(TableError::RuntimeError(format!(
                         "Invalid token encountered type for calle {t:?}"

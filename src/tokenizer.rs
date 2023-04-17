@@ -9,6 +9,7 @@ pub enum Token {
     CellRange((std::ops::Range<usize>, std::ops::Range<usize>)),
     Comma,
     Sum,
+    Mean,
     Plus,
     Slash,
     Minus,
@@ -32,7 +33,7 @@ impl Token {
 
     pub fn is_builtin_fn(&self) -> bool {
         use Token::*;
-        matches!(self, Sum)
+        matches!(self, Sum | Mean)
     }
 }
 
@@ -204,6 +205,7 @@ impl<'a> Tokenizer<'a> {
             .as_ref()
         {
             "sum" => Ok(Token::Sum),
+            "mean" => Ok(Token::Mean),
             _ => return self.cell_reference(),
         };
         self.chop(n);
